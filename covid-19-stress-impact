@@ -1,0 +1,311 @@
+---
+title: "Covid-19 response stress impact mapped with R"
+subtitle: "Mapping the least and most stressful cities versus covid-19 \nresponse stress impact 2021 using R packages"
+author: "Paul A Agbodza"
+date: '2022-06-16'
+output: "html_document"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(raster)
+library(robotstxt)
+library(rvest)
+library(kableExtra)
+library(scales)
+```
+
+## Introduction
+
+#Visualizing data by means of charts or maps with R is fun. Visualization enables the decision-making actors
+#and the data consumers to peep into data whose patterns are not immediately visible. 
+
+##Step One: Load required libraries *tidyverse, raster, robotstxt, rvest, kableExtra*
+
+#The R packages to be applied are *robotstxt* (to query the legality of scrapping a desired webpage), *rvest* 
+#to scrape data, *tidyverse* and *base* R for data cleaning and analysis, *raster* to extract geospatial shapefile data 
+#and *ggplot2* (of the *tidyverse* system by Hickam et al 2019) to generate and visualize maps.
+
+
+##Step Two: Load and clean data
+
+
+#Since this is a web data one must first query if it is legal to scrape this website? robotstxt has a function path_allowed() 
+#that is helpful in this regard.
+
+
+```{r echo = TRUE}
+
+paths_allowed("https://vaay.com/en/pages/stressful-cities-index")
+
+
+cities_index <- read_html("https://vaay.com/en/pages/stressful-cities-index")|>
+  html_nodes("table")|> html_table(fill = TRUE, header = TRUE)
+
+
+stressfulIndex <- cities_index[[1]]
+
+```
+
+```{r create_new_column_names, echo = TRUE}
+
+Governance_Score <- c("Safety and Security",
+                      "Socio-Political Stability",
+                      "Gender Equality", 
+                      "Minority Equality")
+
+City_Score <- c("Density (persons/km2)", "Traffic Congestion",
+                "Weather", "Air Pollution", "Noise Pollution",
+                "Light Pollution")
+
+Finance_Score <-  c("Unemployment Rate (%)", 
+                    "Financial Stress", 
+                    "Social Security")
+
+Citizens_Health_score <- c("Mental Health",
+                           "Access to Healthcare",
+                           "Covid Response Stress Impact")
+
+
+#Concatenate all into vector of column names. They are then automatically appended to the table.
+#The first column is the rank.
+
+
+colnames(stressfulIndex) <- c("Rank", "City", "Country", Governance_Score,
+                              City_Score, Finance_Score, Citizens_Health_score, "Total")
+
+stressfulIndex$`Density (persons/km2)` <- as.numeric(stressfulIndex$`Density (persons/km2)`)
+
+```
+
+```{r display_data_head, echo=TRUE}
+
+knitr::kable(head(stressfulIndex), "pipe")
+
+```
+```{r kable_df, echo = FALSE}
+
+stressfulIndex|>
+  kable(caption = "Table 1: Least and most stressful cities index 2021 table",
+        format = "html") |>
+  kable_styling(font_size = 10, position = "left", full_width = FALSE)|>
+  add_header_above(c(" " = 3, "Governance score" = 4, "City score" = 6, "Finance score" = 3,
+                     "Citizen's health score" = 3, " " = 1), color = "grey20")|>
+  column_spec(c(3,7,13,16,19), border_right = TRUE, color = "grey20")|>
+  scroll_box(width = "1500px", height = "600px")
+```
+
+```{r, rescaling_data, echo = TRUE}
+
+stressfulIndex <- stressfulIndex|>
+  dplyr::select(Rank, City, Country, Total, `Covid Response Stress Impact`)|>
+  mutate(StrIndex = round(scales::rescale(Total, to = c(0, 10)),2))|>
+  dplyr::select(-Total)|>rename("CovidStress"= `Covid Response Stress Impact`)|>
+  mutate(CovidStress = round(scales::rescale(CovidStress, to = c(0, 10)),2))
+
+```
+**Step Three: Prepare data for mapping**
+
+```{r, load_raster_file, echo = TRUE}
+
+#The shapefile data from naturalearthdata  can be downloaded here.
+
+https://www.naturalearthdata.com/http/www.naturalearthdata.com/download/10m/cultural/ne_10m_populated_places.zip
+
+#Download the zip file "ne_10m_populated_places.zip". Extract this shapefile to your working directory or your data folder: 
+#"ne_10m_populated_places.shp". Then load the data into the working directory. 
+#Place your directory path in place of the tilde.
+#NB show the path of your shapfile in place of "~/" in the following line
+
+ne_shp <- raster::shapefile("~/ne_10m_populated_places.shp")
+
+#to make it readable by ggplot2, transform it by fortify()
+
+ne_fort <- fortify(ne_shp@data)
+
+ne_fort <- ne_fort|>dplyr::select(NAME, ADM0NAME, LATITUDE, LONGITUDE)
+#rename columns
+names(ne_fort) <- c("City", "Country", "Latitude", "Longitude")
+
+```
+```{r, check_completeness, echo = TRUE}
+
+missing_countries <- unique(ne_fort$Country)[!unique(ne_fort$Country) %in%  unique(stressfulIndex$Country)]
+#unique(stressfulIndex$Country)[!unique(stressfulIndex$Country)%in% missing_countries]
+
+#additional method is to join to find rows with NA in coordinates column 
+
+checking_cities <- right_join(ne_fort, stressfulIndex, by = c("City" , "Country"))
+
+```
+
+```{r, country_name_correction, echo = TRUE}
+
+#First create a list or dictionary of the city names that need replacement
+
+country_for_correction <- c("United States of America", "United States", 
+                            "United Arab Emirates", "United Kingdom")
+
+country_corrected <- c("USA", "USA", "UAE", "UK")
+country_for_correction <- paste0("\\b", country_for_correction, "\\b")
+ne_fort$Country <- stringi::stri_replace_all_regex(ne_fort$Country,
+                    country_for_correction, country_corrected,
+                                            vectorize_all = FALSE)
+
+
+country_for_correction2 <- c("Kingdom", "Kingdom of the",
+                             "Republic of", "United Republic of")
+country_for_correction2 <- paste0("\\b", country_for_correction2, "\\b")
+
+ne_fort$Country <- stringi::stri_replace_all_regex(ne_fort$Country,
+                                                          country_for_correction2, "",
+                                                          vectorize_all = FALSE)
+
+ne_fort$Country <- gsub("\\S.A.R.\\b", "", ne_fort$Country)
+
+#Remove whitespaces using trimws() function of base package. It is preferred to repeat 
+#this line of code at least once to ensure all white space is removed.
+
+ne_fort$Country <- trimws(ne_fort$Country, which = "both")
+
+##now right_join the two data sets
+
+cities_stress_index <- right_join(ne_fort, stressfulIndex, by = c("City" , "Country"))
+
+
+```
+City names are now to be corrected as there are NA in coordinates for lines 92:100
+
+```{r, correction_and_final_dataset, echo = TRUE}
+
+city_wrongSpell <- cities_stress_index|>filter(!City %in% ne_fort$City)|>
+  dplyr::select(Country, City)
+
+city_wrongSpell[9,] <- c("Costa Rica", "San Jose")
+
+#Paste everything together into a large OR statement
+city_wrongSpell2 <- paste0(city_wrongSpell$City, collapse="|")
+
+#uncheck the following to run
+#find coordinates of the missing cities
+
+#ne_fort[grep("Reyk", ne_fort$City), ]
+#ne_fort[grep("havn", ne_fort$City), ] #København
+#ne_fort[grep("Montr", ne_fort$City), ]
+#ne_fort[grep("rich", ne_fort$City), ]
+#ne_fort[grep("Frankf", ne_fort$City), ]
+#ne_fort[grep("Paul", ne_fort$City), ]
+#ne_fort[grep(city_wrongSpell2, ne_fort$City), ]
+#ne_fort[grep("iv$", ne_fort$City), ]
+#ne_fort[grep("Jos", ne_fort$City), ]
+
+#copy the records and create a subset
+
+cities_df <- read.table(text = "City Country Latitude Longitude
+Reykjavík Iceland 64.15002 -21.95002
+København   Denmark 55.68051 12.561540
+Montréal  Canada 45.50194  -73.58524
+Zürich Switzerland 47.381934  8.548064
+Frankfurt Germany 50.09998  8.675015
+San_José Costa_Rica   9.936958  -84.085997
+Washington  USA 38.90149 -77.01136
+São_Paulo  Brazil -23.556734  -46.62697
+Kyiv  Ukraine 50.43531  30.51468",
+header = TRUE, sep = "")
+
+##make additional corrections
+
+cities_df[6,1:2] <- c("San José", "Costa Rica")
+cities_df[8, 1] <- "São Paulo"
+#cities_df
+
+cities_stress_index[92:100, 1:4] <- cities_df
+
+#data is set so arrange according to ranking
+#the final dataset is here
+
+cities_stress_index <- cities_stress_index[,c(5,1:4, 6:7)]|>
+                 arrange(Rank)
+
+```
+##Step Four: Mapping the joint cities_stress_index and shapefile 
+
+```{r map_data, echo = FALSE}
+
+#first create a world map from ggplot2
+
+world_map <- ggplot2::map_data("world", subregion = "city")
+
+
+ggplot()+
+  geom_polygon(world_map, mapping = aes(long, lat, group = group),
+               color = "grey20",  fill = "NA")+
+  geom_point(data = cities_stress_index, aes(Longitude, Latitude, fill = StrIndex),
+             color = "blue", alpha = 0.3, size = 4)+
+  scale_fill_gradient2(low = scales::muted("red"), mid = "blue", high = "pink")+
+  geom_point(data = cities_stress_index, aes(Longitude, Latitude, 
+                                             size = CovidStress),
+             alpha = 0.9, pch = 6, color = "red")+
+  labs(fill = "Stressfull index", size = "Covid Resp Impact",
+       caption = "Stress and covid-19 index data from https://vaay.com/en/pages/stressful-cities-index 
+       shapefile from: http://www.naturalearthdata.com",
+       title = "Mapping the Least and Most Stressful Cities Index 2021",
+       subtitle = "With Covid-19 response impact")+
+  ggthemes::theme_map()
+
+```
+
+##Description of Map and revision of data
+
+This map is not clear enough. There is ned for a revision.
+
+```{r revise_data_groups, echo = TRUE}
+
+#summary(cities_stress_index)
+
+cities_stress_index2 <- cities_stress_index|>
+  mutate(Stress_grp = case_when(StrIndex <= 5.923 ~ "Most stressed",
+                                StrIndex > 5.923 & StrIndex <= 7.005 ~ "Stressed", 
+                                StrIndex > 7.005 & StrIndex <= 8.428 ~ "Lower stress",
+                                StrIndex > 8.428 ~ "Least stressed"))|>
+  mutate(Stress_grp = factor(Stress_grp, levels = c("Least stressed",
+                                                    "Lower stress",
+                                                    "Stressed",
+                                                    "Most stressed")))|>
+  mutate(CovStr_grp = case_when(CovidStress <= 7.55 ~ "High covid",
+                                   CovidStress > 7.55 ~ "Low covid"))|>
+  mutate(CovStr_grp = factor(CovStr_grp, levels = c("High covid",
+                                                   "Low covid")))
+```
+
+##Step Five: Map revised data
+
+```{r mapping_data, echo = TRUE}
+
+ggplot()+
+  geom_polygon(world_map, mapping = aes(long, lat, group = group),
+               color = "grey20",  fill = "NA")+
+  geom_point(data = cities_stress_index2,
+             aes(Longitude, Latitude, color = CovStr_grp),
+             alpha = 0.4, size = 6)+
+  geom_point(data = cities_stress_index2,
+             aes(Longitude, Latitude, shape = Stress_grp),
+             alpha = 0.8, size = 2, fill = "grey40")+
+  scale_shape_manual(values = c("Least stressed" = 8, "Lower stress" = 2,
+                                 "Stressed" = 22, "Most stressed" = 23))+
+  labs(shape = "Stressfull index", color = "Covid Resp Impact",
+       caption = "Stress and covid-19 index data from https://vaay.com/en/pages/stressful-cities-index 
+       shapefile from: http://www.naturalearthdata.com
+       Mapped with R | #paagbodza :June 2022",
+       title = "Mapping the Covid-19 Response Stress Impact 2021",
+      subtitle = "With the Least and Most Stressful Cities Index 2021")+
+  ggthemes::theme_map()
+
+```
+
+##Discussion and Conclusion
+
+#The map shows that covid-19 stress had impacted Europe and the Americas more than other continents.
+
+
